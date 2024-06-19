@@ -1,0 +1,269 @@
+'変数の宣言を必須
+Option Explicit
+
+'----------------------------------------------------------
+'メイン処理
+'----------------------------------------------------------
+Sub main()
+    
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim cell As Range
+    Dim user_selector As Integer
+
+    ' サーバー記載シートの設定
+    Set ws = ThisWorkbook.Sheets("Server")
+
+    ' 値のある最終行を取得
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    
+    '記載分だけ取得動作を実施します
+    For Each cell In ws.Range("A1:A" & lastRow)
+        user_selector = ws.Cells(cell.Row, "B")
+        Call output_Sheet(cell.Value, user_selector)
+    Next cell
+    
+End Sub
+
+'----------------------------------------------------------
+'各サーバーごとの出力処理を行います
+'----------------------------------------------------------
+Sub output_Sheet(ServerName As String, user_selector As Integer)
+    Dim sheetSchtasks As Worksheet
+    Dim startRange As Range
+    Dim targetFolderName As String
+    Dim srcRange As Range
+    Dim destRange As Range
+    Dim tableName As String
+    
+    Dim data_existence As Boolean
+    
+    '【出力シート再作成処理】の呼び出し
+    Set sheetSchtasks = reCreateSheet(ServerName)
+    
+    '開始セルを指定
+    Set startRange = sheetSchtasks.Range("B2")
+    
+    'スケジュールタスクが格納されているフォルダ名を設定。※「\」で全タスクスケジュールを指定してます
+    targetFolderName = "\"
+    
+    '【スケジュールタスク取得処理】の呼び出しして、データがあればTrue
+    data_existence = outputSchtasks(sheetSchtasks, startRange, targetFolderName, user_selector)
+    
+    If data_existence Then
+    
+        '【データ分割処理】の呼び出し
+        Set srcRange = startRange.CurrentRegion
+        Set destRange = startRange
+        Call TextToColumns(sheetSchtasks, srcRange, destRange)
+        
+        '【テーブル化処理】の呼び出し
+        tableName = "スケジュールタスク一覧"
+        Call makeTable(sheetSchtasks, startRange, tableName)
+        
+        Call UnhideRow(sheetSchtasks)
+        
+        'フィルタ設定　タスク名に2個以上の除外条件を当てはめることは仕様でできません
+        'With sheetSchtasks.Range("B2")
+        '    .CurrentRegion.AutoFilter Field:=2, Criteria1:="<>*Microsoft*" _
+        '      , Operator:=xlAnd, Criteria2:="<>*CreateExplorer*"
+        '    .CurrentRegion.AutoFilter Field:=4, Criteria1:="<>*無効*"
+        'End With
+        'sheetSchtasks.Range("C2").AutoFilter Field:=2, Criteria1:="<>*Microsoft*"  ',Operator:=xlAnd, Criteria2:="<>B型"
+        
+    End If
+    
+End Sub
+
+
+'----------------------------------------------------------
+'出力シート再作成処理
+'引数1 ：sheetName  シート名
+'返り値：ws         再作成したシート(WorkSheetオブジェクト)
+'----------------------------------------------------------
+Function reCreateSheet(ByVal sheetName As String) As Worksheet
+    
+    Dim sheet As Worksheet
+    Dim ws As Worksheet
+
+    '既にシートが存在する場合は削除
+    For Each sheet In ThisWorkbook.Worksheets
+        If sheet.Name = sheetName Then
+            '確認メッセージを非表示
+            Application.DisplayAlerts = False
+            'シート削除
+            Worksheets(sheetName).Delete
+            '確認メッセージを表示
+            Application.DisplayAlerts = True
+        End If
+    Next
+    
+    '------------------------------------------------
+    'シートを新規作成
+    '------------------------------------------------
+    Set ws = Worksheets.Add(After:=Worksheets(Worksheets.Count))
+    ws.Name = sheetName
+    
+    '返り値
+    Set reCreateSheet = ws
+
+End Function
+
+'----------------------------------------------------------
+'スケジュールタスク取得処理
+'引数1：ws               出力シート(WorkSheetオブジェクト)
+'引数2：startRange       開始セル
+'引数3：targetFolderName タスクが格納されているフォルダ名
+'----------------------------------------------------------
+Function outputSchtasks(ByVal ws As Worksheet, ByVal startRange As Range, ByVal targetFolderName As String, user_selector As Integer) As Boolean
+
+    Dim command As String
+    Dim wsh As Object
+    Dim execObj As Object
+    Dim stdOutObj As Object
+    Dim outputColumn As Integer
+    Dim startRow As Integer
+    Dim i As Double
+    Dim line As String
+    
+    outputSchtasks = False
+    
+    '''''''''''''''''''''''''''
+    'スケジュールの取得
+    '''''''''''''''''''''''''''
+    
+    '実行するコマンドを指定
+    Select Case user_selector
+    Case 1:
+        command = "schtasks /query /V /FO CSV /S " & ws.Name & " /U " & ws.Name & "\Administrator /P kjusco"
+    Case 2:
+        command = "schtasks /query /V /FO CSV /S " & ws.Name & " /U Administrator /P kjusco"
+    Case 3:
+        command = "schtasks /query /V /FO CSV /S " & ws.Name & " /U localhost\administrator /P akproxy4pw"
+    Case Else:
+        command = "schtasks /query /V /FO CSV /S " & ws.Name & " /U " & ws.Name & "\Administrator /P kjusco"
+    End Select
+    
+    
+    Set wsh = CreateObject("WScript.Shell")
+    
+    'コマンドを実行
+    Set execObj = wsh.exec("%ComSpec% /c " & command)
+    
+    'コマンドの実行結果を取得
+    Set stdOutObj = execObj.stdOut
+
+    
+    '''''''''''''''''''''''''''
+    'スケジュールの出力
+    '''''''''''''''''''''''''''
+    outputColumn = startRange.Column
+    startRow = startRange.Row
+    i = startRow
+    
+    '取得した行の最後の行まで繰り返し
+    Do While Not stdOutObj.AtEndOfStream
+        
+        '１行取得
+        line = stdOutObj.ReadLine()
+        
+        '不要行(指定フォルダ配下ではないタスク)を除く
+        '文字列「ホスト名」が含まれている行は出力する。カラム名として出力させたいため。
+        If 0 < InStr(line, targetFolderName) Or _
+           0 < InStr(line, "ホスト名") Then
+            ws.Cells(i, outputColumn) = line
+            i = i + 1
+        End If
+    Loop
+    
+    If i <> startRow Then
+        '重複を削除(最初の行以外の文字列「ホスト名」が含まれている行を削除)
+        ws.Cells(startRow, outputColumn).CurrentRegion.RemoveDuplicates Columns:=1
+        outputSchtasks = True
+    End If
+    
+    '後片付け
+    Set stdOutObj = Nothing
+    Set execObj = Nothing
+    Set wsh = Nothing
+
+End Function
+
+
+'----------------------------------------------------------
+'データ分割処理
+'引数1：ws        対象シート
+'引数2：srcRange  分割したいデータが設定されているセル(範囲指定が可能)
+'引数2：destRange 分割後のデータの設定を開始するセル
+'----------------------------------------------------------
+Sub TextToColumns(ByVal ws As Worksheet, ByVal srcRange As Range, ByVal destRange As Range)
+
+    '「,(カンマ)」で分割　注意　DataType:=xlDelimitedを指定しないと分割が正しく動きません！
+    srcRange.TextToColumns Destination:=destRange, DataType:=xlDelimited, comma:=True
+    
+End Sub
+
+
+'----------------------------------------------------------
+'テーブル化処理
+'引数1：ws          対象シート
+'引数2：startRange  テーブル化したい範囲の開始セル(一番左上のセル)
+'引数3：tableName   テーブル名
+'----------------------------------------------------------
+Sub makeTable(ByVal ws As Worksheet, ByVal startRange As Range, ByVal tableName As String)
+    
+    '対象シートのをアクティブ化と一番左上のセルの選択
+    ws.Activate
+    startRange.Select
+    
+    'テーブル化を実行
+    ws.ListObjects.Add.Name = tableName
+    
+    '列幅を自動調整
+    ws.Cells.EntireColumn.AutoFit
+    
+End Sub
+
+'----------------------------------------------------------
+'指定文字列での行の非表示
+'引数1：ws          対象シート
+'----------------------------------------------------------
+Sub UnhideRow(ByVal ws As Worksheet)
+    ' 非表示設定文言を行っているHideRowシートを設定
+    Dim settingSheet As Worksheet
+    Set settingSheet = ThisWorkbook.Sheets("HideRow")
+    
+    Dim i As Integer
+    Dim j As Integer
+    Dim k As Integer
+    
+    Dim lastRow As Long
+    Dim hide_lastRow As Long
+    
+    Dim chk_str As String
+    Dim target As String
+    
+    '非表示文字列を設定したシートから出力項目分をA～AC列までループ
+    For i = 1 To 30
+        ' 設定値のある最終行を取得
+        lastRow = settingSheet.Cells(settingSheet.Rows.Count, i).End(xlUp).Row
+        If (lastRow > 2) Then
+            '設定値がある項目が無くなるまでループ
+            For j = 3 To lastRow
+                '非表示とする文字列を取得
+                chk_str = settingSheet.Cells(j, i)
+                
+                '非表示対象のシートの最終行を取得
+                hide_lastRow = ws.Cells(ws.Rows.Count, i).End(xlUp).Row
+                '非表示設定適用
+                For k = 1 To hide_lastRow
+                    target = ws.Cells(k, i)
+                    If target Like chk_str Then
+                        ws.Rows(k).EntireRow.Hidden = True
+                    End If
+                Next
+            Next
+        End If
+    Next
+    
+End Sub
